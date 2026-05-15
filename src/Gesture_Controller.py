@@ -15,197 +15,165 @@ pyautogui.FAILSAFE = False
 mp_drawing = mp.solutions.drawing_utils
 mp_hands = mp.solutions.hands
 
-# Gesture Encodings 
-class Gest(IntEnum):
-    # Binary Encoded
-    """
-    Enum for mapping all hand gesture to binary number.
-    """
+# ──────────────────────────────────────────────
+#  Gesture Encodings
+# ──────────────────────────────────────────────
+# New Gesture → Action map:
+#   PALM              → Neutral   (open palm, do nothing)
+#   INDEX             → Move Cursor
+#   PINCH_MAJOR       → Left Click  /  Volume  (thumb + index)
+#   PINCH_MINOR       → Right Click /  Brightness (thumb + middle)
+#   TWO_FINGER_CLOSED → Double Click  (index + middle together)
+#   V_GEST            → Scroll        (index + middle spread)
+#   FIST              → Drag & Drop   (all fingers closed)
+#   THREE_FINGERS     → Multi-select  (index + middle + ring)
+# ──────────────────────────────────────────────
 
-    FIST = 0
-    PINKY = 1
-    RING = 2
-    MID = 4
-    LAST3 = 7
-    INDEX = 8
-    FIRST2 = 12
-    LAST4 = 15
-    THUMB = 16    
-    PALM = 31
-    
-    # Extra Mappings
-    V_GEST = 33
-    TWO_FINGER_CLOSED = 34
-    PINCH_MAJOR = 35
-    PINCH_MINOR = 36
+class Gest(IntEnum):
+    """Enum for all hand gestures (4-bit finger pattern + extras)."""
+
+    # 4-bit encoded: bit3=index | bit2=mid | bit1=ring | bit0=pinky
+    FIST              = 0
+    PINKY             = 1
+    RING              = 2
+    MID               = 4
+    LAST3             = 7
+    INDEX             = 8
+    FIRST2            = 12
+    THREE_FINGERS_RAW = 14   # index + mid + ring (raw bits)
+    LAST4             = 15
+    THUMB             = 16
+    PALM              = 31   # all fingers open (neutral)
+
+    # Special / composite gestures
+    V_GEST            = 33   # index + middle spread  → Scroll
+    TWO_FINGER_CLOSED = 34   # index + middle close   → Double Click
+    PINCH_MAJOR       = 35   # thumb + index pinch    → Left Click / Volume
+    PINCH_MINOR       = 36   # thumb + middle pinch   → Right Click / Brightness
+    THREE_FINGERS     = 37   # index + mid + ring     → Multi-select
+
 
 # Multi-handedness Labels
 class HLabel(IntEnum):
     MINOR = 0
     MAJOR = 1
 
-# Convert Mediapipe Landmarks to recognizable Gestures
+
+# ──────────────────────────────────────────────
+#  Hand Recognition
+# ──────────────────────────────────────────────
 class HandRecog:
-    """
-    Convert Mediapipe Landmarks to recognizable Gestures.
-    """
-    
+    """Convert Mediapipe Landmarks to recognizable Gestures."""
+
     def __init__(self, hand_label):
-        """
-        Constructs all the necessary attributes for the HandRecog object.
-
-        Parameters
-        ----------
-            finger : int
-                Represent gesture corresponding to Enum 'Gest',
-                stores computed gesture for current frame.
-            ori_gesture : int
-                Represent gesture corresponding to Enum 'Gest',
-                stores gesture being used.
-            prev_gesture : int
-                Represent gesture corresponding to Enum 'Gest',
-                stores gesture computed for previous frame.
-            frame_count : int
-                total no. of frames since 'ori_gesture' is updated.
-            hand_result : Object
-                Landmarks obtained from mediapipe.
-            hand_label : int
-                Represents multi-handedness corresponding to Enum 'HLabel'.
-        """
-
-        self.finger = 0
+        self.finger      = 0        # 4-bit finger state
+        self.thumb_open  = False    # True when thumb is extended
         self.ori_gesture = Gest.PALM
-        self.prev_gesture = Gest.PALM
+        self.prev_gesture= Gest.PALM
         self.frame_count = 0
         self.hand_result = None
-        self.hand_label = hand_label
-    
+        self.hand_label  = hand_label
+
     def update_hand_result(self, hand_result):
         self.hand_result = hand_result
 
     def get_signed_dist(self, point):
-        """
-        returns signed euclidean distance between 'point'.
-
-        Parameters
-        ----------
-        point : list contaning two elements of type list/tuple which represents 
-            landmark point.
-        
-        Returns
-        -------
-        float
-        """
+        """Signed Euclidean distance; positive when point[0] is above point[1]."""
         sign = -1
         if self.hand_result.landmark[point[0]].y < self.hand_result.landmark[point[1]].y:
             sign = 1
-        dist = (self.hand_result.landmark[point[0]].x - self.hand_result.landmark[point[1]].x)**2
-        dist += (self.hand_result.landmark[point[0]].y - self.hand_result.landmark[point[1]].y)**2
-        dist = math.sqrt(dist)
-        return dist*sign
-    
+        dist = (self.hand_result.landmark[point[0]].x - self.hand_result.landmark[point[1]].x) ** 2
+        dist += (self.hand_result.landmark[point[0]].y - self.hand_result.landmark[point[1]].y) ** 2
+        return math.sqrt(dist) * sign
+
     def get_dist(self, point):
-        """
-        returns euclidean distance between 'point'.
+        """Euclidean distance between two landmarks."""
+        dist = (self.hand_result.landmark[point[0]].x - self.hand_result.landmark[point[1]].x) ** 2
+        dist += (self.hand_result.landmark[point[0]].y - self.hand_result.landmark[point[1]].y) ** 2
+        return math.sqrt(dist)
 
-        Parameters
-        ----------
-        point : list contaning two elements of type list/tuple which represents 
-            landmark point.
-        
-        Returns
-        -------
-        float
-        """
-        dist = (self.hand_result.landmark[point[0]].x - self.hand_result.landmark[point[1]].x)**2
-        dist += (self.hand_result.landmark[point[0]].y - self.hand_result.landmark[point[1]].y)**2
-        dist = math.sqrt(dist)
-        return dist
-    
-    def get_dz(self,point):
-        """
-        returns absolute difference on z-axis between 'point'.
-
-        Parameters
-        ----------
-        point : list contaning two elements of type list/tuple which represents 
-            landmark point.
-        
-        Returns
-        -------
-        float
-        """
+    def get_dz(self, point):
+        """Absolute Z-axis difference between two landmarks."""
         return abs(self.hand_result.landmark[point[0]].z - self.hand_result.landmark[point[1]].z)
-    
-    # Function to find Gesture Encoding using current finger_state.
-    # Finger_state: 1 if finger is open, else 0
+
     def set_finger_state(self):
         """
-        set 'finger' by computing ratio of distance between finger tip 
-        , middle knuckle, base knuckle.
-
-        Returns
-        -------
-        None
+        Compute self.finger (4-bit) and self.thumb_open.
+        Finger bit = 1 if the finger tip is raised above its base knuckle.
+        Thumb open = tip.x < mcp.x in the mirrored image.
         """
-        if self.hand_result == None:
+        if self.hand_result is None:
             return
 
-        points = [[8,5,0],[12,9,0],[16,13,0],[20,17,0]]
+        # [tip, middle_knuckle, base_knuckle] for index→pinky
+        points = [[8, 5, 0], [12, 9, 0], [16, 13, 0], [20, 17, 0]]
         self.finger = 0
-        self.finger = self.finger | 0 #thumb
-        for idx,point in enumerate(points):
-            
-            dist = self.get_signed_dist(point[:2])
+
+        for point in points:
+            dist  = self.get_signed_dist(point[:2])
             dist2 = self.get_signed_dist(point[1:])
-            
             try:
-                ratio = round(dist/dist2,1)
-            except:
-                ratio = round(dist1/0.01,1)
-
+                ratio = round(dist / dist2, 1)
+            except ZeroDivisionError:
+                ratio = round(dist / 0.01, 1)
             self.finger = self.finger << 1
-            if ratio > 0.5 :
+            if ratio > 0.5:
                 self.finger = self.finger | 1
-    
 
-    # Handling Fluctations due to noise
+        # Thumb: tip(4) left of mcp(2) → open (works for mirrored/right hand)
+        self.thumb_open = (
+            self.hand_result.landmark[4].x < self.hand_result.landmark[2].x
+        )
+
     def get_gesture(self):
         """
-        returns int representing gesture corresponding to Enum 'Gest'.
-        sets 'frame_count', 'ori_gesture', 'prev_gesture', 
-        handles fluctations due to noise.
-        
-        Returns
-        -------
-        int
+        Return smoothed Gest enum value for this hand.
+        A gesture must persist for >4 consecutive frames to be confirmed.
         """
-        if self.hand_result == None:
+        if self.hand_result is None:
             return Gest.PALM
 
         current_gesture = Gest.PALM
-        if self.finger in [Gest.LAST3,Gest.LAST4] and self.get_dist([8,4]) < 0.05:
-            if self.hand_label == HLabel.MINOR :
-                current_gesture = Gest.PINCH_MINOR
-            else:
+
+        # ── Priority 1: PINCH_MAJOR  (thumb + index pinch) ──────────────────
+        if self.thumb_open and (self.finger & 8):          # index bit set
+            if self.get_dist([4, 8]) < 0.05:
                 current_gesture = Gest.PINCH_MAJOR
 
-        elif Gest.FIRST2 == self.finger :
-            point = [[8,12],[5,9]]
-            dist1 = self.get_dist(point[0])
-            dist2 = self.get_dist(point[1])
-            ratio = dist1/dist2
+        # ── Priority 2: PINCH_MINOR  (thumb + middle pinch) ─────────────────
+        elif self.thumb_open and (self.finger & 4):        # mid bit set
+            if self.get_dist([4, 12]) < 0.05:
+                current_gesture = Gest.PINCH_MINOR
+
+        # ── Priority 3: Three fingers (index + middle + ring) ────────────────
+        elif (self.finger & 0x0E) == 0x0E:                # bits 1110
+            current_gesture = Gest.THREE_FINGERS
+
+        # ── Priority 4: FIRST2  (index + middle both up) ─────────────────────
+        elif (self.finger & 0x0C) == 0x0C:                # bits 1100
+            dist_tips = self.get_dist([8, 12])
+            dist_base = self.get_dist([5, 9])
+            try:
+                ratio = dist_tips / dist_base
+            except ZeroDivisionError:
+                ratio = 0
+
             if ratio > 1.7:
-                current_gesture = Gest.V_GEST
+                current_gesture = Gest.V_GEST            # spread  → Scroll
             else:
-                if self.get_dz([8,12]) < 0.1:
-                    current_gesture =  Gest.TWO_FINGER_CLOSED
+                if self.get_dz([8, 12]) < 0.1:
+                    current_gesture = Gest.TWO_FINGER_CLOSED  # close → Double Click
                 else:
-                    current_gesture =  Gest.MID
-            
+                    current_gesture = Gest.MID
+
+        # ── Priority 5: Raw bit patterns ──────────────────────────────────────
         else:
-            current_gesture =  self.finger
-        
+            if self.finger == 15:                         # all 4 fingers up
+                current_gesture = Gest.PALM              # neutral
+            else:
+                current_gesture = self.finger            # includes INDEX(8), FIST(0) …
+
+        # ── Noise smoothing ───────────────────────────────────────────────────
         if current_gesture == self.prev_gesture:
             self.frame_count += 1
         else:
@@ -213,200 +181,146 @@ class HandRecog:
 
         self.prev_gesture = current_gesture
 
-        if self.frame_count > 4 :
+        if self.frame_count > 4:
             self.ori_gesture = current_gesture
+
         return self.ori_gesture
 
-# Executes commands according to detected gestures
+
+# ──────────────────────────────────────────────
+#  Controller  –  executes system actions
+# ──────────────────────────────────────────────
 class Controller:
     """
-    Executes commands according to detected gestures.
+    Translates confirmed gestures into system actions.
 
-    Attributes
-    ----------
-    tx_old : int
-        previous mouse location x coordinate
-    ty_old : int
-        previous mouse location y coordinate
-    flag : bool
-        true if V gesture is detected
-    grabflag : bool
-        true if FIST gesture is detected
-    pinchmajorflag : bool
-        true if PINCH gesture is detected through MAJOR hand,
-        on x-axis 'Controller.changesystembrightness', 
-        on y-axis 'Controller.changesystemvolume'.
-    pinchminorflag : bool
-        true if PINCH gesture is detected through MINOR hand,
-        on x-axis 'Controller.scrollHorizontal', 
-        on y-axis 'Controller.scrollVertical'.
-    pinchstartxcoord : int
-        x coordinate of hand landmark when pinch gesture is started.
-    pinchstartycoord : int
-        y coordinate of hand landmark when pinch gesture is started.
-    pinchdirectionflag : bool
-        true if pinch gesture movment is along x-axis,
-        otherwise false
-    prevpinchlv : int
-        stores quantized magnitued of prev pinch gesture displacment, from 
-        starting position
-    pinchlv : int
-        stores quantized magnitued of pinch gesture displacment, from 
-        starting position
-    framecount : int
-        stores no. of frames since 'pinchlv' is updated.
-    prev_hand : tuple
-        stores (x, y) coordinates of hand in previous frame.
-    pinch_threshold : float
-        step size for quantization of 'pinchlv'.
+    MAJOR hand  →  Move / Left-click / Drag / Scroll / Multi-select / Volume
+    MINOR hand  →  Right-click / Brightness
     """
 
-    tx_old = 0
-    ty_old = 0
-    trial = True
-    flag = False
-    grabflag = False
-    pinchmajorflag = False
-    pinchminorflag = False
-    pinchstartxcoord = None
-    pinchstartycoord = None
-    pinchdirectionflag = None
-    prevpinchlv = 0
-    pinchlv = 0
-    framecount = 0
-    prev_hand = None
-    pinch_threshold = 0.3
-    
+    tx_old            = 0
+    ty_old            = 0
+    trial             = True
+    flag              = False    # set after V_GEST, cleared on click
+    grabflag          = False
+    pinchmajorflag    = False
+    pinchminorflag    = False
+    pinchstartxcoord  = None
+    pinchstartycoord  = None
+    pinchdirectionflag= None
+    prevpinchlv       = 0
+    pinchlv           = 0
+    framecount        = 0
+    prev_hand         = None
+    pinch_threshold   = 0.3
+
+    # ── Pinch level helpers ───────────────────────────────────────────────────
     def getpinchylv(hand_result):
-        """returns distance beween starting pinch y coord and current hand position y coord."""
-        dist = round((Controller.pinchstartycoord - hand_result.landmark[8].y)*10,1)
-        return dist
+        """Vertical displacement from pinch start (index tip)."""
+        return round((Controller.pinchstartycoord - hand_result.landmark[8].y) * 10, 1)
 
     def getpinchxlv(hand_result):
-        """returns distance beween starting pinch x coord and current hand position x coord."""
-        dist = round((hand_result.landmark[8].x - Controller.pinchstartxcoord)*10,1)
-        return dist
-    
+        """Horizontal displacement from pinch start (index tip)."""
+        return round((hand_result.landmark[8].x - Controller.pinchstartxcoord) * 10, 1)
+
+    # ── System controls ───────────────────────────────────────────────────────
     def changesystembrightness():
-        """sets system brightness based on 'Controller.pinchlv'."""
-        currentBrightnessLv = sbcontrol.get_brightness(display=0)/100.0
-        currentBrightnessLv += Controller.pinchlv/50.0
-        if currentBrightnessLv > 1.0:
-            currentBrightnessLv = 1.0
-        elif currentBrightnessLv < 0.0:
-            currentBrightnessLv = 0.0       
-        sbcontrol.fade_brightness(int(100*currentBrightnessLv) , start = sbcontrol.get_brightness(display=0))
-    
+        """Adjust display brightness by Controller.pinchlv step."""
+        current = sbcontrol.get_brightness(display=0) / 100.0
+        current += Controller.pinchlv / 50.0
+        current = max(0.0, min(1.0, current))
+        sbcontrol.fade_brightness(int(100 * current),
+                                  start=sbcontrol.get_brightness(display=0))
+
     def changesystemvolume():
-        """sets system volume based on 'Controller.pinchlv'."""
-        devices = AudioUtilities.GetSpeakers()
+        """Adjust system volume by Controller.pinchlv step."""
+        devices   = AudioUtilities.GetSpeakers()
         interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        volume = cast(interface, POINTER(IAudioEndpointVolume))
-        currentVolumeLv = volume.GetMasterVolumeLevelScalar()
-        currentVolumeLv += Controller.pinchlv/50.0
-        if currentVolumeLv > 1.0:
-            currentVolumeLv = 1.0
-        elif currentVolumeLv < 0.0:
-            currentVolumeLv = 0.0
-        volume.SetMasterVolumeLevelScalar(currentVolumeLv, None)
-    
+        volume    = cast(interface, POINTER(IAudioEndpointVolume))
+        current   = volume.GetMasterVolumeLevelScalar()
+        current  += Controller.pinchlv / 50.0
+        current   = max(0.0, min(1.0, current))
+        volume.SetMasterVolumeLevelScalar(current, None)
+
     def scrollVertical():
-        """scrolls on screen vertically."""
-        pyautogui.scroll(120 if Controller.pinchlv>0.0 else -120)
-        
-    
+        """Scroll page up/down."""
+        pyautogui.scroll(120 if Controller.pinchlv > 0.0 else -120)
+
     def scrollHorizontal():
-        """scrolls on screen horizontally."""
+        """Scroll page left/right."""
         pyautogui.keyDown('shift')
         pyautogui.keyDown('ctrl')
-        pyautogui.scroll(-120 if Controller.pinchlv>0.0 else 120)
+        pyautogui.scroll(-120 if Controller.pinchlv > 0.0 else 120)
         pyautogui.keyUp('ctrl')
         pyautogui.keyUp('shift')
 
-    # Locate Hand to get Cursor Position
-    # Stabilize cursor by Dampening
+    # ── Cursor position (with dampening) ─────────────────────────────────────
     def get_position(hand_result):
         """
-        returns coordinates of current hand position.
-
-        Locates hand to get cursor position also stabilize cursor by 
-        dampening jerky motion of hand.
-
-        Returns
-        -------
-        tuple(float, float)
+        Return (x, y) screen position derived from hand landmark 9 (palm centre).
+        Small jitter is suppressed; large fast movements pass through.
         """
-        point = 9
-        position = [hand_result.landmark[point].x ,hand_result.landmark[point].y]
-        sx,sy = pyautogui.size()
-        x_old,y_old = pyautogui.position()
-        x = int(position[0]*sx)
-        y = int(position[1]*sy)
+        point    = 9
+        pos      = [hand_result.landmark[point].x, hand_result.landmark[point].y]
+        sx, sy   = pyautogui.size()
+        x_old, y_old = pyautogui.position()
+        x = int(pos[0] * sx)
+        y = int(pos[1] * sy)
+
         if Controller.prev_hand is None:
-            Controller.prev_hand = x,y
+            Controller.prev_hand = x, y
+
         delta_x = x - Controller.prev_hand[0]
         delta_y = y - Controller.prev_hand[1]
+        distsq  = delta_x ** 2 + delta_y ** 2
 
-        distsq = delta_x**2 + delta_y**2
-        ratio = 1
-        Controller.prev_hand = [x,y]
+        Controller.prev_hand = [x, y]
 
         if distsq <= 25:
             ratio = 0
         elif distsq <= 900:
-            ratio = 0.07 * (distsq ** (1/2))
+            ratio = 0.07 * (distsq ** 0.5)
         else:
             ratio = 2.1
-        x , y = x_old + delta_x*ratio , y_old + delta_y*ratio
-        return (x,y)
 
+        x = x_old + delta_x * ratio
+        y = y_old + delta_y * ratio
+        return (x, y)
+
+    # ── Pinch gesture initialiser ─────────────────────────────────────────────
     def pinch_control_init(hand_result):
-        """Initializes attributes for pinch gesture."""
+        """Record the starting position of a pinch gesture."""
         Controller.pinchstartxcoord = hand_result.landmark[8].x
         Controller.pinchstartycoord = hand_result.landmark[8].y
-        Controller.pinchlv = 0
-        Controller.prevpinchlv = 0
-        Controller.framecount = 0
+        Controller.pinchlv          = 0
+        Controller.prevpinchlv      = 0
+        Controller.framecount       = 0
 
-    # Hold final position for 5 frames to change status
+    # ── Pinch gesture controller ──────────────────────────────────────────────
     def pinch_control(hand_result, controlHorizontal, controlVertical):
         """
-        calls 'controlHorizontal' or 'controlVertical' based on pinch flags, 
-        'framecount' and sets 'pinchlv'.
-
-        Parameters
-        ----------
-        hand_result : Object
-            Landmarks obtained from mediapipe.
-        controlHorizontal : callback function assosiated with horizontal
-            pinch gesture.
-        controlVertical : callback function assosiated with vertical
-            pinch gesture. 
-        
-        Returns
-        -------
-        None
+        Determine pinch direction and call the appropriate control callback
+        once the hand has held the position for 5 frames.
         """
         if Controller.framecount == 5:
             Controller.framecount = 0
-            Controller.pinchlv = Controller.prevpinchlv
+            Controller.pinchlv    = Controller.prevpinchlv
 
-            if Controller.pinchdirectionflag == True:
-                controlHorizontal() #x
+            if Controller.pinchdirectionflag is True:
+                controlHorizontal()
+            elif Controller.pinchdirectionflag is False:
+                controlVertical()
 
-            elif Controller.pinchdirectionflag == False:
-                controlVertical() #y
+        lvx = Controller.getpinchxlv(hand_result)
+        lvy = Controller.getpinchylv(hand_result)
 
-        lvx =  Controller.getpinchxlv(hand_result)
-        lvy =  Controller.getpinchylv(hand_result)
-            
         if abs(lvy) > abs(lvx) and abs(lvy) > Controller.pinch_threshold:
             Controller.pinchdirectionflag = False
             if abs(Controller.prevpinchlv - lvy) < Controller.pinch_threshold:
                 Controller.framecount += 1
             else:
                 Controller.prevpinchlv = lvy
-                Controller.framecount = 0
+                Controller.framecount  = 0
 
         elif abs(lvx) > Controller.pinch_threshold:
             Controller.pinchdirectionflag = True
@@ -414,18 +328,21 @@ class Controller:
                 Controller.framecount += 1
             else:
                 Controller.prevpinchlv = lvx
-                Controller.framecount = 0
+                Controller.framecount  = 0
 
-    def handle_controls(gesture, hand_result):  
-        """Impliments all gesture functionality."""      
-        x,y = None,None
-        if gesture != Gest.PALM :
-            x,y = Controller.get_position(hand_result)
-        
-        # flag reset
+    # ── Main gesture dispatcher ───────────────────────────────────────────────
+    def handle_controls(gesture, hand_result):
+        """Map confirmed gesture to the appropriate system action."""
+        x, y = None, None
+
+        # Compute cursor position for all non-neutral gestures
+        if gesture not in (Gest.PALM,):
+            x, y = Controller.get_position(hand_result)
+
+        # ── Release flags when gestures end ──────────────────────────────────
         if gesture != Gest.FIST and Controller.grabflag:
             Controller.grabflag = False
-            pyautogui.mouseUp(button = "left")
+            pyautogui.mouseUp(button='left')
 
         if gesture != Gest.PINCH_MAJOR and Controller.pinchmajorflag:
             Controller.pinchmajorflag = False
@@ -433,168 +350,208 @@ class Controller:
         if gesture != Gest.PINCH_MINOR and Controller.pinchminorflag:
             Controller.pinchminorflag = False
 
-        # implementation
-        if gesture == Gest.V_GEST:
+        # ── PALM → Neutral (do nothing) ───────────────────────────────────────
+        if gesture == Gest.PALM:
+            pass
+
+        # ── INDEX → Move Cursor ────────────────────────────────────────────────
+        elif gesture == Gest.INDEX:
             Controller.flag = True
-            pyautogui.moveTo(x, y, duration = 0.1)
+            pyautogui.moveTo(x, y, duration=0.1)
 
+        # ── FIST → Drag & Drop (hold left mouse button + move) ────────────────
         elif gesture == Gest.FIST:
-            if not Controller.grabflag : 
+            if not Controller.grabflag:
                 Controller.grabflag = True
-                pyautogui.mouseDown(button = "left")
-            pyautogui.moveTo(x, y, duration = 0.1)
+                pyautogui.mouseDown(button='left')
+            pyautogui.moveTo(x, y, duration=0.1)
 
-        elif gesture == Gest.MID and Controller.flag:
-            pyautogui.click()
-            Controller.flag = False
+        # ── V_GEST → Scroll (two fingers spread) ──────────────────────────────
+        elif gesture == Gest.V_GEST:
+            Controller.flag = True
+            pyautogui.moveTo(x, y, duration=0.1)
 
-        elif gesture == Gest.INDEX and Controller.flag:
-            pyautogui.click(button='right')
-            Controller.flag = False
-
+        # ── TWO_FINGER_CLOSED → Double Click ──────────────────────────────────
         elif gesture == Gest.TWO_FINGER_CLOSED and Controller.flag:
             pyautogui.doubleClick()
             Controller.flag = False
 
-        elif gesture == Gest.PINCH_MINOR:
-            if Controller.pinchminorflag == False:
-                Controller.pinch_control_init(hand_result)
-                Controller.pinchminorflag = True
-            Controller.pinch_control(hand_result,Controller.scrollHorizontal, Controller.scrollVertical)
-        
+        # ── MID → Left Click (after cursor move with INDEX) ───────────────────
+        elif gesture == Gest.MID and Controller.flag:
+            pyautogui.click()
+            Controller.flag = False
+
+        # ── THREE_FINGERS → Multi-select (Ctrl + Click) ───────────────────────
+        elif gesture == Gest.THREE_FINGERS:
+            pyautogui.keyDown('ctrl')
+            pyautogui.click(x, y)
+            pyautogui.keyUp('ctrl')
+
+        # ── PINCH_MAJOR → Left Click (tap) or Volume Control (sustained) ──────
+        #    Thumb + Index pinch on MAJOR hand
+        #    • y-axis movement → Volume
+        #    • x-axis movement → (reserved / horizontal scroll fallback)
         elif gesture == Gest.PINCH_MAJOR:
-            if Controller.pinchmajorflag == False:
+            if not Controller.pinchmajorflag:
                 Controller.pinch_control_init(hand_result)
                 Controller.pinchmajorflag = True
-            Controller.pinch_control(hand_result,Controller.changesystembrightness, Controller.changesystemvolume)
-        
-'''
-----------------------------------------  Main Class  ----------------------------------------
-    Entry point of Gesture Controller
-'''
+                # Immediate left-click on first detection (tap)
+                pyautogui.click(button='left')
+            else:
+                # Sustained pinch: control volume via vertical movement
+                Controller.pinch_control(
+                    hand_result,
+                    Controller.scrollHorizontal,   # horizontal → scroll
+                    Controller.changesystemvolume  # vertical   → volume
+                )
+
+        # ── PINCH_MINOR → Right Click (tap) or Brightness Control (sustained) ─
+        #    Thumb + Middle pinch on MINOR hand
+        #    • y-axis movement → Brightness
+        elif gesture == Gest.PINCH_MINOR:
+            if not Controller.pinchminorflag:
+                Controller.pinch_control_init(hand_result)
+                Controller.pinchminorflag = True
+                # Immediate right-click on first detection (tap)
+                pyautogui.click(button='right')
+            else:
+                # Sustained pinch: control brightness via vertical movement
+                Controller.pinch_control(
+                    hand_result,
+                    Controller.scrollHorizontal,        # horizontal → scroll
+                    Controller.changesystembrightness   # vertical   → brightness
+                )
 
 
+# ──────────────────────────────────────────────
+#  GestureController  –  main entry point
+# ──────────────────────────────────────────────
 class GestureController:
     """
-    Handles camera, obtain landmarks from mediapipe, entry point
-    for whole program.
+    Manages camera capture, obtains landmarks from MediaPipe,
+    classifies hands, and routes gestures to Controller.
 
     Attributes
     ----------
-    gc_mode : int
-        indicates weather gesture controller is running or not,
-        1 if running, otherwise 0.
-    cap : Object
-        object obtained from cv2, for capturing video frame.
-    CAM_HEIGHT : int
-        highet in pixels of obtained frame from camera.
-    CAM_WIDTH : int
-        width in pixels of obtained frame from camera.
-    hr_major : Object of 'HandRecog'
-        object representing major hand.
-    hr_minor : Object of 'HandRecog'
-        object representing minor hand.
-    dom_hand : bool
-        True if right hand is domaniant hand, otherwise False.
-        default True.
+    gc_mode    : 1 = running, 0 = stopped
+    cap        : cv2.VideoCapture object
+    CAM_HEIGHT : frame height in pixels
+    CAM_WIDTH  : frame width in pixels
+    hr_major   : HandRecog for dominant hand (default: right)
+    hr_minor   : HandRecog for non-dominant hand (default: left)
+    dom_hand   : True = right hand is dominant
     """
-    gc_mode = 0
-    cap = None
+
+    gc_mode    = 0
+    cap        = None
     CAM_HEIGHT = None
-    CAM_WIDTH = None
-    hr_major = None # Right Hand by default
-    hr_minor = None # Left hand by default
-    dom_hand = True
+    CAM_WIDTH  = None
+    hr_major   = None
+    hr_minor   = None
+    dom_hand   = True
 
     def __init__(self):
-        """Initilaizes attributes."""
-        GestureController.gc_mode = 1
-        GestureController.cap = cv2.VideoCapture(0)
+        GestureController.gc_mode    = 1
+        GestureController.cap        = cv2.VideoCapture(0)
         GestureController.CAM_HEIGHT = GestureController.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-        GestureController.CAM_WIDTH = GestureController.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-    
+        GestureController.CAM_WIDTH  = GestureController.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+
     def classify_hands(results):
-        """
-        sets 'hr_major', 'hr_minor' based on classification(left, right) of 
-        hand obtained from mediapipe, uses 'dom_hand' to decide major and
-        minor hand.
-        """
-        left , right = None,None
+        """Assign left/right landmarks to hr_major / hr_minor."""
+        left, right = None, None
         try:
-            handedness_dict = MessageToDict(results.multi_handedness[0])
-            if handedness_dict['classification'][0]['label'] == 'Right':
+            d = MessageToDict(results.multi_handedness[0])
+            if d['classification'][0]['label'] == 'Right':
                 right = results.multi_hand_landmarks[0]
-            else :
+            else:
                 left = results.multi_hand_landmarks[0]
-        except:
+        except Exception:
+            pass
+        try:
+            d = MessageToDict(results.multi_handedness[1])
+            if d['classification'][0]['label'] == 'Right':
+                right = results.multi_hand_landmarks[1]
+            else:
+                left = results.multi_hand_landmarks[1]
+        except Exception:
             pass
 
-        try:
-            handedness_dict = MessageToDict(results.multi_handedness[1])
-            if handedness_dict['classification'][0]['label'] == 'Right':
-                right = results.multi_hand_landmarks[1]
-            else :
-                left = results.multi_hand_landmarks[1]
-        except:
-            pass
-        
-        if GestureController.dom_hand == True:
+        if GestureController.dom_hand:
             GestureController.hr_major = right
             GestureController.hr_minor = left
-        else :
+        else:
             GestureController.hr_major = left
             GestureController.hr_minor = right
 
     def start(self):
-        """
-        Entry point of whole programm, caputres video frame and passes, obtains
-        landmark from mediapipe and passes it to 'handmajor' and 'handminor' for
-        controlling.
-        """
-        
+        """Main loop: capture → detect → gesture → action → display."""
         handmajor = HandRecog(HLabel.MAJOR)
         handminor = HandRecog(HLabel.MINOR)
 
-        with mp_hands.Hands(max_num_hands = 2,min_detection_confidence=0.5, min_tracking_confidence=0.5) as hands:
+        with mp_hands.Hands(
+            max_num_hands=2,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
+        ) as hands:
+
             while GestureController.cap.isOpened() and GestureController.gc_mode:
                 success, image = GestureController.cap.read()
-
                 if not success:
                     print("Ignoring empty camera frame.")
                     continue
-                
+
+                # Pre-process frame
                 image = cv2.cvtColor(cv2.flip(image, 1), cv2.COLOR_BGR2RGB)
                 image.flags.writeable = False
                 results = hands.process(image)
-                
                 image.flags.writeable = True
                 image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-                if results.multi_hand_landmarks:                   
+                if results.multi_hand_landmarks:
                     GestureController.classify_hands(results)
                     handmajor.update_hand_result(GestureController.hr_major)
                     handminor.update_hand_result(GestureController.hr_minor)
 
                     handmajor.set_finger_state()
                     handminor.set_finger_state()
-                    gest_name = handminor.get_gesture()
 
+                    # Minor hand PINCH_MINOR takes priority (brightness/right-click)
+                    gest_name = handminor.get_gesture()
                     if gest_name == Gest.PINCH_MINOR:
                         Controller.handle_controls(gest_name, handminor.hand_result)
                     else:
+                        # Otherwise use major hand for all other controls
                         gest_name = handmajor.get_gesture()
                         Controller.handle_controls(gest_name, handmajor.hand_result)
-                    
+
+                    # Draw hand skeleton overlay
                     for hand_landmarks in results.multi_hand_landmarks:
-                        mp_drawing.draw_landmarks(image, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+                        mp_drawing.draw_landmarks(
+                            image, hand_landmarks, mp_hands.HAND_CONNECTIONS
+                        )
+
+                    # Overlay current gesture name on screen
+                    cv2.putText(
+                        image,
+                        f'Gesture: {gest_name.name if hasattr(gest_name, "name") else gest_name}',
+                        (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8,
+                        (0, 255, 0),
+                        2,
+                        cv2.LINE_AA
+                    )
                 else:
                     Controller.prev_hand = None
+
                 cv2.imshow('Gesture Controller', image)
-                if cv2.waitKey(5) & 0xFF == 13:
+                if cv2.waitKey(5) & 0xFF == 13:   # Enter to quit
                     break
+
         GestureController.cap.release()
         cv2.destroyAllWindows()
 
-# uncomment to run directly
-# gc1 = GestureController()
-# gc1.start()
+
+# Uncomment to run directly
+gc1 = GestureController()
+gc1.start()
